@@ -12,13 +12,12 @@ export async function updateSession(request: NextRequest) {
         getAll() {
           return request.cookies.getAll()
         },
-        setAll(cookiesToSet, headers) {
+        setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
           response = NextResponse.next({ request })
           cookiesToSet.forEach(({ name, value, options }) =>
             response.cookies.set(name, value, options)
           )
-          Object.entries(headers).forEach(([key, value]) => response.headers.set(key, value))
         },
       },
     }
@@ -26,11 +25,21 @@ export async function updateSession(request: NextRequest) {
 
   const { data } = await supabase.auth.getClaims()
   const pathname = request.nextUrl.pathname
-  const protectedRoute =
-    pathname.startsWith('/command-center') ||
-    pathname.startsWith('/onboarding') ||
-    pathname.startsWith('/people') ||
-    pathname.startsWith('/finance')
+  const protectedPrefixes = [
+    '/command-center',
+    '/onboarding',
+    '/people',
+    '/visitors',
+    '/tasks',
+    '/ask',
+    '/care',
+    '/serve',
+    '/migration',
+    '/finance',
+  ]
+  const protectedRoute = protectedPrefixes.some((prefix) =>
+    pathname === prefix || pathname.startsWith(`${prefix}/`)
+  )
 
   if (protectedRoute && !data?.claims) {
     const loginUrl = request.nextUrl.clone()
