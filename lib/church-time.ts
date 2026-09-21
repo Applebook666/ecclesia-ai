@@ -6,23 +6,26 @@ function partsAt(date:Date,timeZone:string){
  return {year:get("year"),month:get("month"),day:get("day"),hour:get("hour"),minute:get("minute"),second:get("second")};
 }
 
+function sameLocal(a:ReturnType<typeof partsAt>,b:ReturnType<typeof partsAt>){
+ return a.year===b.year&&a.month===b.month&&a.day===b.day&&a.hour===b.hour&&a.minute===b.minute&&a.second===b.second;
+}
+
 export function churchLocalDateTimeToIso(value:string,timeZone:string){
  const m=LOCAL_DATE_TIME.exec(value);
  if(!m)throw new Error("Invalid local date/time");
  const wanted={year:+m[1],month:+m[2],day:+m[3],hour:+m[4],minute:+m[5],second:+(m[6]??0)};
- // Validate timezone before doing arithmetic.
  new Intl.DateTimeFormat("en-US",{timeZone}).format(new Date());
- let guess=Date.UTC(wanted.year,wanted.month-1,wanted.day,wanted.hour,wanted.minute,wanted.second);
+
  const wantedEpoch=Date.UTC(wanted.year,wanted.month-1,wanted.day,wanted.hour,wanted.minute,wanted.second);
- for(let i=0;i<3;i++){
-  const p=partsAt(new Date(guess),timeZone);
-  const represented=Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second);
-  const delta=wantedEpoch-represented;
-  guess+=delta;
-  if(delta===0)break;
+ const matches:number[]=[];
+ // Search the practical UTC-offset range. Reject DST gaps and fall-back folds
+ // rather than silently choosing the wrong service time.
+ for(let offsetMinutes=-14*60;offsetMinutes<=14*60;offsetMinutes+=15){
+  const candidate=wantedEpoch-offsetMinutes*60_000;
+  if(sameLocal(partsAt(new Date(candidate),timeZone),wanted))matches.push(candidate);
  }
- const result=new Date(guess);
- const check=partsAt(result,timeZone);
- if(Object.keys(wanted).some(k=>check[k as keyof typeof check]!==wanted[k as keyof typeof wanted]))throw new Error("Local time does not exist in church timezone");
- return result.toISOString();
+ const unique=[...new Set(matches)];
+ if(unique.length===0)throw new Error("Local time does not exist in church timezone");
+ if(unique.length>1)throw new Error("Local time is ambiguous in church timezone");
+ return new Date(unique[0]).toISOString();
 }
