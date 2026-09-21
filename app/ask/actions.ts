@@ -25,7 +25,7 @@ export async function askEcclesia(question:string):Promise<AssistantAnswer>{
     supabase.from("ministries").select("id",{count:"exact",head:true}).eq("church_id",churchId).eq("active",true),
     supabase.from("services").select("id,name,starts_at,ends_at,status").eq("church_id",churchId).gte("starts_at",now).neq("status","cancelled").order("starts_at").limit(12),
     supabase.from("volunteers").select("id,person_id,people(first_name,last_name)").eq("church_id",churchId).eq("status","active"),
-    supabase.from("service_assignments").select("id,status,starts_at,ends_at,role_name,service_id,service_position_id,volunteer_id").eq("church_id",churchId).gte("starts_at",now).neq("status","declined").order("starts_at")
+    supabase.from("service_assignments").select("id,status,starts_at,ends_at,role_name,service_id,service_position_id,volunteer_id").eq("church_id",churchId).gte("starts_at",now).in("status",["scheduled","confirmed"]).order("starts_at")
   ]);
 
   const serviceIds=(services??[]).map(s=>s.id);
