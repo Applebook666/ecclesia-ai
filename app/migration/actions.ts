@@ -34,12 +34,21 @@ export async function uploadMigrationFile(formData:FormData){
  if(!(file instanceof File)||file.size===0||file.size>10485760)redirect("/migration?error=Choose+a+file+under+10MB");
  const kind=allowedUploadTypes.get(file.type);
  if(!kind)redirect("/migration?error=Only+CSV+or+XLSX+files+are+allowed");
+ const lowerName=file.name.toLowerCase();
+ const extensionKind=lowerName.endsWith(".csv")?"csv":lowerName.endsWith(".xlsx")?"xlsx":null;
+ if(!extensionKind||extensionKind!==kind)redirect("/migration?error=File+extension+and+content+type+must+match");
  const {data:job}=await supabase.from("migration_jobs").select("id,status,source_type").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
  if(!job||job.status!=="draft"||!["csv","xlsx"].includes(job.source_type))redirect("/migration?error=This+migration+job+cannot+accept+files");
  if(job.source_type!==kind)redirect("/migration?error=File+type+does+not+match+migration+source");
  const safeName=file.name.replace(/[^a-zA-Z0-9._-]/g,"_").slice(-120)||"import";
  const path=`${m.church_id}/${job.id}/${crypto.randomUUID()}-${safeName}`;
  const bytes=await file.arrayBuffer();
+ const head=new Uint8Array(bytes.slice(0,8));
+ if(kind==="xlsx"&&!(head[0]===0x50&&head[1]===0x4b))redirect("/migration?error=Invalid+Excel+file");
+ if(kind==="csv"){
+  const sample=new Uint8Array(bytes.slice(0,Math.min(bytes.byteLength,4096)));
+  if(sample.some(b=>b===0))redirect("/migration?error=Invalid+CSV+file");
+ }
  const {error:uploadError}=await supabase.storage.from("migration-imports").upload(path,bytes,{contentType:file.type,upsert:false});
  if(uploadError)redirect("/migration?error=Secure+file+upload+failed");
  const {error:metaError}=await supabase.from("migration_files").insert({church_id:m.church_id,migration_job_id:job.id,original_name:file.name.slice(0,255),storage_path:path,mime_type:file.type,byte_size:file.size});
