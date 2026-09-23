@@ -57,3 +57,42 @@ export async function uploadMigrationFile(formData:FormData){
  if(stateError)redirect("/migration?error=File+stored+but+analysis+could+not+start");
  redirect("/migration?message=File+secured+and+ready+for+analysis");
 }
+
+const peopleTargets:Record<string,string>={firstname:"first_name",first_name:"first_name",first:"first_name",lastname:"last_name",last_name:"last_name",last:"last_name",email:"email",emailaddress:"email",email_address:"email",phone:"phone",phonenumber:"phone",phone_number:"phone",mobile:"phone"};
+
+function csvRows(text:string){
+ const rows:string[][]=[]; let row:string[]=[],cell="",quoted=false;
+ for(let i=0;i<text.length;i++){const ch=text[i];
+  if(ch==='"'){if(quoted&&text[i+1]==='"'){cell+='"';i++;}else quoted=!quoted;}
+  else if(ch===","&&!quoted){row.push(cell);cell="";}
+  else if((ch==="\n"||ch==="\r")&&!quoted){if(ch==="\r"&&text[i+1]==="\n")i++;row.push(cell);cell="";if(row.some(v=>v.trim()))rows.push(row);row=[];}
+  else cell+=ch;
+ }
+ row.push(cell); if(row.some(v=>v.trim()))rows.push(row); return rows;
+}
+function normHeader(v:string){return v.trim().toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");}
+
+export async function analyzeCsvMigration(formData:FormData){
+ const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??"");
+ const {data:job}=await supabase.from("migration_jobs").select("id,status,source_type").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(!job||job.status!=="analyzing"||job.source_type!=="csv")redirect(`/migration/${jobId}?error=CSV+analysis+is+not+available`);
+ const {data:file}=await supabase.from("migration_files").select("id,storage_path").eq("church_id",m.church_id).eq("migration_job_id",jobId).order("created_at",{ascending:false}).limit(1).maybeSingle();
+ if(!file)redirect(`/migration/${jobId}?error=No+source+file+found`);
+ const {data:blob,error:downloadError}=await supabase.storage.from("migration-imports").download(file.storage_path);
+ if(downloadError||!blob)redirect(`/migration/${jobId}?error=Could+not+read+source+file`);
+ const text=await blob.text(); const rows=csvRows(text);
+ if(rows.length<2||rows.length>5001)redirect(`/migration/${jobId}?error=CSV+must+contain+1+to+5000+data+rows`);
+ const headers=rows[0].map(normHeader); if(headers.some((h,i)=>!h||headers.indexOf(h)!==i))redirect(`/migration/${jobId}?error=CSV+headers+must+be+unique+and+non-empty`);
+ const mappings=headers.map(h=>({church_id:m.church_id,migration_job_id:jobId,source_entity:"people",source_field:h,target_entity:"people",target_field:peopleTargets[h]??"",confidence:peopleTargets[h]?0.95:0.25}));
+ const records=rows.slice(1).map((r,i)=>{const raw=Object.fromEntries(headers.map((h,x)=>[h,(r[x]??"").trim()]));const normalized=Object.fromEntries(headers.filter(h=>peopleTargets[h]).map(h=>[peopleTargets[h],raw[h]]));return {church_id:m.church_id,migration_job_id:jobId,source_entity:"people",source_record_key:String(i+2),raw_data:raw,normalized_data:normalized,status:Object.keys(normalized).length?"ready":"needs_review",review_reason:Object.keys(normalized).length?null:"No recognized People fields"};});
+ const {error:mapError}=await supabase.from("migration_mappings").insert(mappings); if(mapError)redirect(`/migration/${jobId}?error=Could+not+stage+field+mappings`);
+ const {error:recordError}=await supabase.from("migration_records").insert(records);
+ if(recordError){await supabase.from("migration_mappings").delete().eq("church_id",m.church_id).eq("migration_job_id",jobId);redirect(`/migration/${jobId}?error=Could+not+stage+records`);}
+ const ready=records.filter(r=>r.status==="ready").length, review=records.length-ready;
+ const {error:updateError}=await supabase.from("migration_jobs").update({status:"mapping",total_records:records.length,ready_records:ready,review_records:review,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id).eq("status","analyzing");
+ if(updateError)redirect(`/migration/${jobId}?error=Records+staged+but+job+state+could+not+advance`);
+ redirect(`/migration/${jobId}?message=CSV+analyzed+and+staged+for+mapping`);
+}
