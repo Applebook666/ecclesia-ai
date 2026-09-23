@@ -1,0 +1,20 @@
+import Link from "next/link";
+import {redirect} from "next/navigation";
+import {createClient} from "@/lib/supabase/server";
+
+export default async function MigrationJobPage({params}:{params:Promise<{id:string}>}){
+ const {id}=await params; const supabase=await createClient();
+ const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const {data:job}=await supabase.from("migration_jobs").select("id,source_name,source_type,status,total_records,ready_records,review_records,imported_records,failed_records,created_at").eq("id",id).eq("church_id",m.church_id).maybeSingle();
+ if(!job)redirect("/migration?error=Migration+job+not+found");
+ const [{data:files},{data:mappings},{data:records}]=await Promise.all([
+  supabase.from("migration_files").select("id,original_name,mime_type,byte_size,created_at").eq("church_id",m.church_id).eq("migration_job_id",id).order("created_at",{ascending:false}),
+  supabase.from("migration_mappings").select("id,source_entity,source_field,target_entity,target_field,confidence,approved_at").eq("church_id",m.church_id).eq("migration_job_id",id),
+  supabase.from("migration_records").select("id,status,source_entity,review_reason").eq("church_id",m.church_id).eq("migration_job_id",id).limit(100)
+ ]);
+ const rc=(records??[]).reduce<Record<string,number>>((a,r)=>(a[r.status]=(a[r.status]??0)+1,a),{});
+ return <main className="min-h-screen bg-[#f4f5f2] text-[#1d2923]"><header className="bg-[#13271f] px-6 py-5 text-white"><div className="mx-auto flex max-w-6xl justify-between"><b>✦ ECCLESIA AI</b><Link href="/migration" className="text-sm text-white/70">← Migration Center</Link></div></header><div className="mx-auto max-w-6xl p-6 sm:p-10"><p className="text-xs font-bold tracking-[.18em] text-[#9a7b29]">MIGRATION JOB</p><h1 className="mt-2 text-3xl font-semibold">{job.source_name}</h1><p className="mt-2 text-sm capitalize text-[#778079]">{job.source_type} · {job.status.replace("_"," ")}</p><div className="mt-6 grid gap-4 sm:grid-cols-4"><Metric l="Staged" v={job.total_records}/><Metric l="Ready" v={job.ready_records}/><Metric l="Review" v={job.review_records}/><Metric l="Failed" v={job.failed_records}/></div><section className="mt-6 rounded-2xl border bg-white p-6"><h2 className="text-xl font-semibold">Source files</h2><div className="mt-3 divide-y">{files?.map(f=><div key={f.id} className="flex justify-between py-3 text-sm"><span>{f.original_name}</span><span className="text-[#778079]">{f.byte_size?Math.ceil(f.byte_size/1024)+" KB":"—"}</span></div>)}{!files?.length&&<p className="py-5 text-sm text-[#778079]">No source files registered.</p>}</div></section><section className="mt-6 grid gap-4 md:grid-cols-2"><div className="rounded-2xl border bg-white p-6"><h2 className="font-semibold">Field mapping</h2><p className="mt-1 text-sm text-[#778079]">{mappings?.length??0} mappings proposed · {(mappings??[]).filter(x=>x.approved_at).length} approved</p></div><div className="rounded-2xl border bg-white p-6"><h2 className="font-semibold">Exception review</h2><p className="mt-1 text-sm text-[#778079]">{rc.needs_review??0} need review · {rc.duplicate??0} possible duplicates · {rc.failed??0} failed</p></div></section><div className="mt-6 rounded-2xl border border-[#e2d7b8] bg-[#fffaf0] p-5 text-sm leading-6"><b>Safety gate:</b> staged data cannot become live church records from this screen. Mapping, exception review and explicit approval must be completed first.</div></div></main>
+}
+function Metric({l,v}:{l:string;v:number}){return <div className="rounded-2xl border bg-white p-5"><p className="text-sm text-[#778079]">{l}</p><b className="mt-2 block text-3xl">{v}</b></div>}
