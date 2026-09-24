@@ -127,7 +127,7 @@ export async function detectMigrationDuplicates(formData:FormData){
  if(!records)redirect(`/migration/${jobId}?error=Could+not+load+staged+records`);
  const {data:people}=await supabase.from("people").select("id,email,phone").eq("church_id",m.church_id);
  const emailMap=new Map((people??[]).filter(p=>p.email).map(p=>[String(p.email).trim().toLowerCase(),p.id]));
- const phoneMap=new Map((people??[]).filter(p=>p.phone).map(p=>[canonicalPhone(String(p.phone)),p.id]).filter(([k])=>k.length>=7));
+ const phoneMap=new Map<string,string>((people??[]).filter(p=>p.phone).map(p=>[canonicalPhone(String(p.phone)),String(p.id)] as [string,string]).filter(([k])=>k.length>=7));
  let duplicates=0;
  for(const r of records){const d=(r.normalized_data??{}) as Record<string,unknown>;const email=String(d.email??"").trim().toLowerCase();const phone=canonicalPhone(String(d.phone??""));const match=(email&&emailMap.get(email))||(phone.length>=7&&phoneMap.get(phone));
   if(match){const {error}=await supabase.from("migration_records").update({status:"duplicate",matched_record_id:match,review_reason:email&&emailMap.has(email)?"Existing person has same email":"Existing person has same phone"}).eq("id",r.id).eq("church_id",m.church_id).eq("migration_job_id",jobId);if(error)redirect(`/migration/${jobId}?error=Duplicate+review+could+not+complete`);duplicates++;}
