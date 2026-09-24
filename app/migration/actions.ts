@@ -96,3 +96,21 @@ export async function analyzeCsvMigration(formData:FormData){
  if(updateError)redirect(`/migration/${jobId}?error=Records+staged+but+job+state+could+not+advance`);
  redirect(`/migration/${jobId}?message=CSV+analyzed+and+staged+for+mapping`);
 }
+
+export async function approveMigrationMappings(formData:FormData){
+ const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??"");
+ const {data:job}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(!job||job.status!=="mapping")redirect(`/migration/${jobId}?error=Job+is+not+ready+for+mapping+approval`);
+ const {data:maps}=await supabase.from("migration_mappings").select("id,target_field,confidence").eq("church_id",m.church_id).eq("migration_job_id",jobId);
+ if(!maps?.length)redirect(`/migration/${jobId}?error=No+field+mappings+found`);
+ if(maps.some(x=>!x.target_field||Number(x.confidence??0)<0.5))redirect(`/migration/${jobId}?error=Uncertain+fields+must+be+reviewed+before+approval`);
+ const now=new Date().toISOString();
+ const {error}=await supabase.from("migration_mappings").update({approved_by:user.id,approved_at:now}).eq("church_id",m.church_id).eq("migration_job_id",jobId);
+ if(error)redirect(`/migration/${jobId}?error=Could+not+approve+field+mappings`);
+ const {error:stateError}=await supabase.from("migration_jobs").update({status:"review",updated_at:now}).eq("id",jobId).eq("church_id",m.church_id).eq("status","mapping");
+ if(stateError)redirect(`/migration/${jobId}?error=Mappings+approved+but+review+could+not+start`);
+ redirect(`/migration/${jobId}?message=Mappings+approved.+Exception+review+is+now+required`);
+}
