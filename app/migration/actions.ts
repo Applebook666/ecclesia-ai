@@ -156,3 +156,19 @@ export async function resolveMigrationRecord(formData:FormData){
  await supabase.from("migration_jobs").update({ready_records:ready??0,review_records:review??0,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id);
  redirect(`/migration/${jobId}?message=Exception+resolved`);
 }
+
+export async function importReadyPeopleMigration(formData:FormData){
+ const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??""); const confirmation=String(formData.get("confirmation")??"");
+ if(confirmation!=="IMPORT")redirect(`/migration/${jobId}?error=Type+IMPORT+to+confirm+the+live+People+import`);
+ const {data:job}=await supabase.from("migration_jobs").select("id,status,church_id").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(!job||job.status!=="review")redirect(`/migration/${jobId}?error=Migration+is+not+ready+for+live+import`);
+ const {count:open}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["pending","needs_review","duplicate"]);
+ if((open??0)>0)redirect(`/migration/${jobId}?error=Resolve+every+exception+before+importing`);
+ const {data,error}=await supabase.rpc("import_ready_people_migration",{target_job_id:jobId});
+ if(error)redirect(`/migration/${jobId}?error=Live+import+was+rejected.+No+partial+import+was+kept`);
+ const imported=typeof data==="object"&&data&&"imported" in data?String((data as {imported:unknown}).imported):"0";
+ redirect(`/migration/${jobId}?message=Import+completed+and+reconciled.+${imported}+People+records+created`);
+}
