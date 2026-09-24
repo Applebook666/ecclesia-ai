@@ -137,3 +137,22 @@ export async function detectMigrationDuplicates(formData:FormData){
  await supabase.from("migration_jobs").update({ready_records:ready??0,review_records:review??0,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id);
  redirect(`/migration/${jobId}?message=Duplicate+scan+complete.+${duplicates}+possible+duplicates+flagged`);
 }
+
+const allowedResolutions=new Set(["ready","excluded"]);
+export async function resolveMigrationRecord(formData:FormData){
+ const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??""),recordId=String(formData.get("record_id")??""),resolution=String(formData.get("resolution")??"");
+ if(!allowedResolutions.has(resolution))redirect(`/migration/${jobId}?error=Invalid+record+resolution`);
+ const {data:job}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(!job||job.status!=="review")redirect(`/migration/${jobId}?error=Job+is+not+in+exception+review`);
+ const {data:record}=await supabase.from("migration_records").select("id,status").eq("id",recordId).eq("church_id",m.church_id).eq("migration_job_id",jobId).maybeSingle();
+ if(!record||!["duplicate","needs_review"].includes(record.status))redirect(`/migration/${jobId}?error=Record+is+not+an+open+exception`);
+ const {error}=await supabase.from("migration_records").update({status:resolution,matched_record_id:resolution==="ready"?null:undefined,review_reason:resolution==="excluded"?"Excluded during human review":null}).eq("id",recordId).eq("church_id",m.church_id).eq("migration_job_id",jobId);
+ if(error)redirect(`/migration/${jobId}?error=Could+not+resolve+record`);
+ const {count:review}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["needs_review","duplicate"]);
+ const {count:ready}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
+ await supabase.from("migration_jobs").update({ready_records:ready??0,review_records:review??0,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id);
+ redirect(`/migration/${jobId}?message=Exception+resolved`);
+}
