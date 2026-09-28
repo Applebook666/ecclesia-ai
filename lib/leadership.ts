@@ -19,6 +19,12 @@ export type LeadershipSnapshot = {
   declinedAssignments: number;
 };
 
+export type LeadershipHealth = {
+  score: number;
+  label: "Clear" | "Stable" | "Needs attention" | "High attention";
+  summary: string;
+};
+
 const item = (count: number, singular: string, plural = `${singular}s`) => `${count} ${count === 1 ? singular : plural}`;
 
 export function buildLeadershipSignals(snapshot: LeadershipSnapshot): LeadershipSignal[] {
@@ -56,4 +62,30 @@ export function leadershipSummary(signals: LeadershipSignal[]) {
   if (!signals.length) return "Core operational signals are currently clear across visitor follow-up, tasks and service staffing.";
   if (signals.length === 1) return "ECCLESIA sees one cross-ministry issue that deserves leadership attention.";
   return `ECCLESIA sees ${signals.length} cross-ministry issues that deserve leadership attention.`;
+}
+
+export function leadershipHealth(snapshot: LeadershipSnapshot): LeadershipHealth {
+  const penalty = Math.min(100,
+    Math.min(snapshot.overdueTasks, 5) * 9 +
+    Math.min(snapshot.urgentTasks, 5) * 7 +
+    Math.min(snapshot.visitorsNeedingFollowUp, 8) * 4 +
+    Math.min(snapshot.vacantServicePositions, 8) * 3 +
+    Math.min(snapshot.declinedAssignments, 5) * 2
+  );
+  const score = Math.max(0, 100 - penalty);
+  if (score >= 90) return { score, label: "Clear", summary: "Core operational workflows are currently in a strong position based on the signals ECCLESIA can observe." };
+  if (score >= 75) return { score, label: "Stable", summary: "Operations are broadly stable, with a small number of items worth leadership review." };
+  if (score >= 50) return { score, label: "Needs attention", summary: "Several observable workflow issues need leadership attention before they become harder to recover." };
+  return { score, label: "High attention", summary: "Multiple operational signals require leadership review. ECCLESIA recommends working the priority queue from the top." };
+}
+
+export function leadershipFocusPlan(signals: LeadershipSignal[], limit = 3) {
+  return signals.slice(0, limit).map((signal, index) => ({
+    rank: index + 1,
+    key: signal.key,
+    title: signal.title,
+    detail: signal.detail,
+    next: signal.next,
+    href: signal.href
+  }));
 }
