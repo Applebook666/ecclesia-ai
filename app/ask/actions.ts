@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 type AssistantAnswer={answer:string;links:{label:string;href:string}[]};
 type VolunteerRow={id:string;person_id:string;people:{first_name:string|null;last_name:string|null}|{first_name:string|null;last_name:string|null}[]|null};
 type AssignmentRow={id:string;status:string;starts_at:string;ends_at:string|null;role_name:string;service_id:string|null;service_position_id:string|null;volunteer_id:string};
+type LeadershipSignal={score:number;title:string;detail:string;next:string;href:string};
 
 const nameOf=(v:VolunteerRow|undefined)=>{const p=Array.isArray(v?.people)?v?.people[0]:v?.people;return [p?.first_name,p?.last_name].filter(Boolean).join(" ")||"Unnamed volunteer";};
 const plural=(n:number,one:string,many=one+"s")=>`${n} ${n===1?one:many}`;
@@ -43,6 +44,15 @@ export async function askEcclesia(question:string):Promise<AssistantAnswer>{
   const filled=assignments.filter(a=>a.service_position_id&&(a.status==="scheduled"||a.status==="confirmed")).length;
   const vacant=Math.max(0,required-filled),staffingPct=required?Math.min(100,Math.round((filled/required)*100)):100;
 
+  const leadershipSignals=[
+    overdueTasks.length?{score:100,title:"Overdue work",detail:`${plural(overdueTasks.length,"task")} overdue.`,next:"Review the overdue queue, confirm ownership, and decide which items should be completed or reassigned today.",href:"/tasks"}:null,
+    urgentTasks.length?{score:90,title:"Urgent tasks",detail:`${plural(urgentTasks.length,"open task")} marked urgent.`,next:"Review urgent tasks and confirm each has a clear owner and next action.",href:"/tasks"}:null,
+    overdueVisitors.length?{score:80,title:"Visitor follow-up",detail:`${plural(overdueVisitors.length,"visitor follow-up")} overdue.`,next:"Review the visitor journey queue and assign a respectful next follow-up where appropriate.",href:"/visitors"}:null,
+    vacant?{score:70,title:"Service coverage",detail:`${plural(vacant,"planned service position")} vacant.`,next:"Review upcoming service plans and decide which vacant positions need staffing first.",href:"/serve"}:null,
+    declined.length?{score:60,title:"Serve declines",detail:`${plural(declined.length,"upcoming assignment")} declined.`,next:"Review declined assignments and determine whether replacement coverage is needed.",href:"/serve"}:null
+  ].filter(Boolean).sort((a,b)=>(b?.score??0)-(a?.score??0)) as LeadershipSignal[];
+  const topSignal=leadershipSignals[0];
+
   const filledByPosition=new Map<string,number>();
   for(const a of assignments)if(a.service_position_id&&(a.status==="scheduled"||a.status==="confirmed"))filledByPosition.set(a.service_position_id,(filledByPosition.get(a.service_position_id)??0)+1);
   const openPositions=(positions??[]).map(p=>({...p,vacant:Math.max(0,(p.required_count??0)-(filledByPosition.get(p.id)??0))})).filter(p=>p.vacant>0);
@@ -57,7 +67,11 @@ export async function askEcclesia(question:string):Promise<AssistantAnswer>{
   const asksUnconfirmed=q.includes("hasn't confirmed")||q.includes("has not confirmed")||q.includes("not confirmed")||q.includes("awaiting confirmation")||q.includes("who hasn")||q.includes("who hasn't");
   const asksConflicts=q.includes("double-book")||q.includes("double book")||q.includes("conflict")||q.includes("overlap");
   const asksReadiness=q.includes("ready for sunday")||q.includes("sunday readiness")||q.includes("fully staffed")||q.includes("staffing readiness");
+  const asksPriority=q.includes("priority")||q.includes("first")||q.includes("most important")||q.includes("focus on")||q.includes("focus today")||q.includes("what should i do");
 
+  if(asksPriority){
+    return topSignal?{answer:`Your highest operational priority is ${topSignal.title.toLowerCase()}: ${topSignal.detail} Recommended next step: ${topSignal.next} This recommendation is advisory; ECCLESIA will not execute it automatically.`,links:[{label:"Review highest priority",href:topSignal.href},{label:"Command Center",href:"/command-center"}]}:{answer:"I do not see an urgent cross-ministry workflow issue right now. Visitor follow-up, open task urgency and upcoming service coverage are currently clear based on the available workspace data.",links:[{label:"Command Center",href:"/command-center"}]};
+  }
   if(asksVacancies){
     const details=openPositions.slice(0,8).map(p=>`${p.role_name} (${p.vacant} open)`);
     return{answer:openPositions.length?`There are ${vacant} unfilled service positions across upcoming services: ${details.join(", ")}${openPositions.length>8?" and more.":"."}`:"All required positions in the upcoming service plans are currently filled.",links:[{label:"Open Service Planning",href:"/serve"}]};
@@ -79,7 +93,7 @@ export async function askEcclesia(question:string):Promise<AssistantAnswer>{
   }
   if(q.includes("visitor")||q.includes("follow up")||q.includes("follow-up"))return{answer:`You currently have ${visitors?.length??0} visitors in People and ${journeys?.length??0} active visitor journeys. ${overdueVisitors.length} visitor follow-up${overdueVisitors.length===1?" is":"s are"} overdue.`,links:[{label:"Open Visitor Journey",href:"/visitors"}]};
   if(q.includes("overdue")||q.includes("task"))return{answer:`There are ${tasks?.length??0} open ministry tasks. ${overdueTasks.length} are overdue and ${urgentTasks.length} are marked urgent.`,links:[{label:"Open Follow-Up Queue",href:"/tasks"}]};
-  if(q.includes("attention")||q.includes("today"))return{answer:`Your current operational attention list includes ${plural(overdueTasks.length,"overdue task")}, ${plural(urgentTasks.length,"urgent task")}, ${plural(overdueVisitors.length,"overdue visitor follow-up")}, ${plural(vacant,"vacant service position")}, ${plural(scheduled.length,"Serve assignment")} awaiting confirmation, and ${plural(declined.length,"declined Serve assignment")}.`,links:[{label:"Command Center",href:"/command-center"},{label:"Serve Scheduler",href:"/serve"},{label:"Tasks",href:"/tasks"}]};
+  if(q.includes("attention")||q.includes("today"))return{answer:topSignal?`Your attention list includes ${plural(overdueTasks.length,"overdue task")}, ${plural(urgentTasks.length,"urgent task")}, ${plural(overdueVisitors.length,"overdue visitor follow-up")}, ${plural(vacant,"vacant service position")}, ${plural(scheduled.length,"Serve assignment")} awaiting confirmation, and ${plural(declined.length,"declined Serve assignment")}. Highest priority: ${topSignal.title}. ${topSignal.next}`:`Your current operational attention list is clear across overdue tasks, urgent tasks, overdue visitor follow-up and service vacancies.`,links:[{label:"Command Center",href:"/command-center"},{label:"Review priority",href:topSignal?.href??"/command-center"}]};
   if(q.includes("people")||q.includes("member")||q.includes("attendance"))return{answer:`ECCLESIA currently has ${activePeople??0} active people records and ${visitors?.length??0} people marked as visitors.`,links:[{label:"Open People CRM",href:"/people"}]};
-  return{answer:`Your church workspace has ${activePeople??0} active people, ${visitors?.length??0} visitors, ${tasks?.length??0} open tasks, and ${vacant} vacant positions across upcoming service plans. Ask what needs attention today, whether Sunday is fully staffed, which roles are vacant, who has not confirmed, or whether anyone is double-booked.`,links:[{label:"Command Center",href:"/command-center"}]};
+  return{answer:`Your church workspace has ${activePeople??0} active people, ${visitors?.length??0} visitors, ${tasks?.length??0} open tasks, and ${vacant} vacant positions across upcoming service plans.${topSignal?` The current highest operational priority is ${topSignal.title.toLowerCase()}.`:""} Ask what needs attention today, what should come first, whether Sunday is fully staffed, which roles are vacant, who has not confirmed, or whether anyone is double-booked.`,links:[{label:"Command Center",href:"/command-center"}]};
 }
