@@ -25,6 +25,13 @@ export type LeadershipHealth = {
   summary: string;
 };
 
+export type LeadershipMomentum = {
+  direction: "improving" | "steady" | "needs_attention";
+  label: "Improving" | "Steady" | "Needs attention";
+  delta: number;
+  summary: string;
+};
+
 const item = (count: number, singular: string, plural = `${singular}s`) => `${count} ${count === 1 ? singular : plural}`;
 
 export function buildLeadershipSignals(snapshot: LeadershipSnapshot): LeadershipSignal[] {
@@ -88,4 +95,27 @@ export function leadershipFocusPlan(signals: LeadershipSignal[], limit = 3) {
     next: signal.next,
     href: signal.href
   }));
+}
+
+export function leadershipMomentum(current: LeadershipSnapshot, previous: LeadershipSnapshot): LeadershipMomentum {
+  const currentScore = leadershipHealth(current).score;
+  const previousScore = leadershipHealth(previous).score;
+  const delta = currentScore - previousScore;
+  if (delta >= 5) return { direction: "improving", label: "Improving", delta, summary: `Operational health improved by ${delta} points compared with the previous review period.` };
+  if (delta <= -5) return { direction: "needs_attention", label: "Needs attention", delta, summary: `Operational health is ${Math.abs(delta)} points lower than the previous review period. Review the priority queue before drawing conclusions.` };
+  return { direction: "steady", label: "Steady", delta, summary: "Operational health is broadly steady compared with the previous review period." };
+}
+
+export function leadershipBriefing(snapshot: LeadershipSnapshot) {
+  const signals = buildLeadershipSignals(snapshot);
+  const health = leadershipHealth(snapshot);
+  const focus = leadershipFocusPlan(signals);
+  return {
+    health,
+    signals,
+    focus,
+    summary: leadershipSummary(signals),
+    headline: signals.length ? `${signals.length} leadership priorit${signals.length === 1 ? "y" : "ies"} detected` : "Core operational queue is clear",
+    actionCount: signals.reduce((sum, signal) => sum + signal.count, 0)
+  };
 }
