@@ -1,0 +1,18 @@
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import { advanceVisitor } from "./actions";
+
+const stages = ["new","contacted","connected","returning","member_path"] as const;
+const labels = { new:"New", contacted:"Contacted", connected:"Connected", returning:"Returning", member_path:"Member Path" };
+
+export default async function VisitorsPage() {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+  const { data: membership } = await supabase.from("church_memberships").select("church_id").eq("user_id", user.id).eq("status", "active").limit(1).maybeSingle();
+  if (!membership) redirect("/onboarding");
+  const { data: journeys } = await supabase.from("visitor_journeys").select("id,person_id,stage,last_contact_at,next_follow_up_at,contact_attempts,people(first_name,last_name,email,phone,first_visit_date)").eq("church_id", membership.church_id).neq("stage","closed").order("next_follow_up_at", { ascending:true, nullsFirst:false });
+
+  return <main className="min-h-screen bg-[#f4f5f2] text-[#1d2923]"><header className="bg-[#13271f] px-6 py-5 text-white"><div className="mx-auto flex max-w-[1500px] justify-between"><Link href="/command-center" className="font-bold">✦ ECCLESIA AI</Link><Link href="/command-center" className="text-sm text-white/70">← Command Center</Link></div></header><div className="mx-auto max-w-[1500px] p-6 sm:p-10"><p className="text-xs font-bold tracking-[.18em] text-[#9a7b29]">VISITOR JOURNEY</p><h1 className="mt-2 text-4xl font-semibold">Never lose a visitor.</h1><p className="mt-2 text-[#69736c]">A live pipeline from first visit to meaningful connection.</p><div className="mt-8 grid gap-4 xl:grid-cols-5">{stages.map(stage => { const cards = journeys?.filter(j => j.stage === stage) ?? []; return <section key={stage} className="min-h-72 rounded-2xl border border-[#e0e3de] bg-white p-4"><div className="flex items-center justify-between"><h2 className="font-semibold">{labels[stage]}</h2><span className="rounded-full bg-[#f2eee2] px-2.5 py-1 text-xs font-bold text-[#755d20]">{cards.length}</span></div><div className="mt-4 space-y-3">{cards.map(journey => { const person = journey.people as unknown as {first_name:string;last_name:string;email:string|null;phone:string|null;first_visit_date:string|null}; const due = journey.next_follow_up_at && new Date(journey.next_follow_up_at).getTime() < Date.now(); return <article key={journey.id} className="rounded-xl border border-[#e7e9e5] p-4"><Link href={`/people/${journey.person_id}`} className="font-semibold hover:text-[#9a7b29]">{person.first_name} {person.last_name}</Link><p className="mt-1 text-xs text-[#7a847d]">{person.email || person.phone || "No contact details"}</p>{journey.next_follow_up_at && <p className={`mt-3 text-xs font-semibold ${due ? "text-red-700" : "text-[#69736c]"}`}>{due ? "Follow-up overdue · " : "Next follow-up · "}{new Date(journey.next_follow_up_at).toLocaleDateString()}</p>}<form action={advanceVisitor.bind(null, journey.id, journey.person_id, stage)} className="mt-3"><button className="w-full rounded-lg bg-[#173329] px-3 py-2 text-xs font-semibold text-white">{stage === "member_path" ? "Close journey" : "Advance →"}</button></form></article>})}{!cards.length && <p className="py-8 text-center text-xs text-[#9aa19c]">No visitors here</p>}</div></section>})}</div></div></main>;
+}
