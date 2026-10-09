@@ -16,6 +16,25 @@ export async function askEcclesia(question:string):Promise<AssistantAnswer>{
  const initialChecks=[peopleResult,visitorsResult,tasksResult,journeysResult,volunteersCountResult,ministriesResult,servicesResult,volunteerRowsResult,futureAssignmentsResult];
  if(initialChecks.some(result=>result.error))return{answer:"I couldn't verify all the church records needed for a reliable answer. No health score or operational conclusion has been calculated. Please try again or review the relevant workspace directly.",links:[{label:"Command Center",href:"/command-center"}]};
  const activePeople=peopleResult.count,visitors=visitorsResult.data,tasks=tasksResult.data,journeys=journeysResult.data,volunteerCount=volunteersCountResult.count,ministries=ministriesResult.count,services=servicesResult.data,volunteerRows=volunteerRowsResult.data,futureAssignments=futureAssignmentsResult.data;
+ // PostgREST may cap returned rows even when the query succeeds. Refuse to score a partial dataset.
+ const [taskCountResult,journeyCountResult,visitorCountResult,volunteerRowsCountResult,futureAssignmentCountResult,upcomingServiceCountResult]=await Promise.all([
+  supabase.from("tasks").select("id",{count:"exact",head:true}).eq("church_id",churchId).in("status",["open","in_progress"]),
+  supabase.from("visitor_journeys").select("person_id",{count:"exact",head:true}).eq("church_id",churchId).neq("stage","closed"),
+  supabase.from("people").select("id",{count:"exact",head:true}).eq("church_id",churchId).eq("status","visitor"),
+  supabase.from("volunteers").select("id",{count:"exact",head:true}).eq("church_id",churchId).eq("status","active"),
+  supabase.from("service_assignments").select("id",{count:"exact",head:true}).eq("church_id",churchId).gte("starts_at",now).in("status",["scheduled","confirmed"]),
+  supabase.from("services").select("id",{count:"exact",head:true}).eq("church_id",churchId).gte("starts_at",now).neq("status","cancelled")
+ ]);
+ const completenessChecks=[
+  [taskCountResult,tasks?.length??0],
+  [journeyCountResult,journeys?.length??0],
+  [visitorCountResult,visitors?.length??0],
+  [volunteerRowsCountResult,volunteerRows?.length??0],
+  [futureAssignmentCountResult,futureAssignments?.length??0]
+ ] as const;
+ if(completenessChecks.some(([result,length])=>result.error||result.count===null||result.count!==length)||upcomingServiceCountResult.error||upcomingServiceCountResult.count===null||upcomingServiceCountResult.count>(services?.length??0)){
+  return{answer:"Some church records could not be verified as complete. I cannot safely calculate a leadership score or declare a ministry queue clear. Please review the relevant workspace directly.",links:[{label:"Command Center",href:"/command-center"}]};
+ }
  const serviceIds=(services??[]).map(s=>s.id); const [positionsResult,serviceAssignmentsResult]=serviceIds.length?await Promise.all([supabase.from("service_positions").select("id,service_id,role_name,required_count").eq("church_id",churchId).in("service_id",serviceIds),supabase.from("service_assignments").select("id,status,starts_at,ends_at,role_name,service_id,service_position_id,volunteer_id").eq("church_id",churchId).in("service_id",serviceIds).order("starts_at")]):[{data:[],error:null},{data:[],error:null}];
  if(positionsResult.error||serviceAssignmentsResult.error)return{answer:"I couldn't verify service planning records, so I cannot give a reliable leadership answer right now. No records were changed.",links:[{label:"Service Planning",href:"/serve"}]};
  const positions=positionsResult.data,serviceAssignments=serviceAssignmentsResult.data;
