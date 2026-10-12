@@ -32,7 +32,7 @@ export async function askEcclesia(question:string):Promise<AssistantAnswer>{
   [volunteerRowsCountResult,volunteerRows?.length??0],
   [futureAssignmentCountResult,futureAssignments?.length??0]
  ] as const;
- if(completenessChecks.some(([result,length])=>result.error||result.count===null||result.count!==length)||upcomingServiceCountResult.error||upcomingServiceCountResult.count===null||upcomingServiceCountResult.count>(services?.length??0)){
+ if(completenessChecks.some(([result,length])=>result.error||result.count===null||result.count!==length)||upcomingServiceCountResult.error||upcomingServiceCountResult.count===null||(upcomingServiceCountResult.count>12&&((services?.length??0)!==12))||(upcomingServiceCountResult.count<=12&&upcomingServiceCountResult.count!==(services?.length??0))){
   return{answer:"Some church records could not be verified as complete. I cannot safely calculate a leadership score or declare a ministry queue clear. Please review the relevant workspace directly.",links:[{label:"Command Center",href:"/command-center"}]};
  }
  const serviceIds=(services??[]).map(s=>s.id); const [positionsResult,serviceAssignmentsResult]=serviceIds.length?await Promise.all([supabase.from("service_positions").select("id,service_id,role_name,required_count").eq("church_id",churchId).in("service_id",serviceIds),supabase.from("service_assignments").select("id,status,starts_at,ends_at,role_name,service_id,service_position_id,volunteer_id").eq("church_id",churchId).in("service_id",serviceIds).order("starts_at")]):[{data:[],error:null},{data:[],error:null}];
