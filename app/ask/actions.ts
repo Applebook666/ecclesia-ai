@@ -49,7 +49,7 @@ export async function askEcclesia(question:string):Promise<AssistantAnswer>{
  }
 
  const assignments=(serviceAssignments??[]) as AssignmentRow[],volunteers=(volunteerRows??[]) as unknown as VolunteerRow[],volunteerById=new Map(volunteers.map(v=>[v.id,v]));
- const overdueTasks=(tasks??[]).filter(t=>t.due_at&&t.due_at<now),urgentTasks=(tasks??[]).filter(t=>t.priority==="urgent"),visitorsNeedingFollowUp=(journeys??[]).filter(j=>!j.next_follow_up_at||j.next_follow_up_at<now),scheduled=assignments.filter(a=>a.status==="scheduled"),confirmed=assignments.filter(a=>a.status==="confirmed"),declined=assignments.filter(a=>a.status==="declined");
+ const overdueTasks=(tasks??[]).filter(t=>t.due_at&&t.due_at<now),urgentTasks=(tasks??[]).filter(t=>t.priority==="urgent"),visitorsNeedingFollowUp=(visitors??[]).filter(v=>{const journey=(journeys??[]).find(j=>j.person_id===v.id);return !journey?.next_follow_up_at||journey.next_follow_up_at<now;}),scheduled=assignments.filter(a=>a.status==="scheduled"),confirmed=assignments.filter(a=>a.status==="confirmed"),declined=assignments.filter(a=>a.status==="declined");
  const required=(positions??[]).reduce((sum,p)=>sum+(p.required_count??0),0),filled=assignments.filter(a=>a.service_position_id&&(a.status==="scheduled"||a.status==="confirmed")).length,vacant=Math.max(0,required-filled),staffingPct=required?Math.min(100,Math.round((filled/required)*100)):100;
  const snapshot={overdueTasks:overdueTasks.length,urgentTasks:urgentTasks.length,visitorsNeedingFollowUp:visitorsNeedingFollowUp.length,vacantServicePositions:vacant,declinedAssignments:declined.length};
  const briefing=leadershipBriefing(snapshot),leadershipSignals=briefing.signals,topSignal=leadershipSignals[0],health=briefing.health,focus=briefing.focus;
