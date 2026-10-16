@@ -6,7 +6,7 @@ import { buildMorningBriefing } from "@/lib/briefing";
 export default async function CommandCenter() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser(); if (!user) redirect("/login");
-  const { data: membership } = await supabase.from("church_memberships").select("church_id,role,churches(name)").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle(); if(!membership) redirect("/onboarding");
+  const { data: membership, error: membershipError } = await supabase.from("church_memberships").select("church_id,role,churches(name)").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle(); if(membershipError) throw new Error("Unable to verify church membership. Please retry."); if(!membership) redirect("/onboarding");
   const churchId=membership.church_id; const relation=membership.churches as unknown as {name:string}|{name:string}[]|null; const churchName=Array.isArray(relation)?relation[0]?.name:relation?.name; const nowDate=new Date(); const now=nowDate.toISOString(); const canViewGiving=["owner","pastor","administrator","finance"].includes(membership.role); const year=nowDate.getFullYear(); const yearStart=`${year}-01-01T00:00:00.000Z`; const monthStart=new Date(year,nowDate.getMonth(),1).toISOString(); const thirtyDaysAgo=new Date(nowDate.getTime()-30*86400000).toISOString(); const sixtyDaysAgo=new Date(nowDate.getTime()-60*86400000).toISOString(); const givingQueryStart=yearStart<sixtyDaysAgo?yearStart:sixtyDaysAgo;
   const [{count:peopleCount},{data:visitors},{data:openTasks},{data:journeys},{data:services}]=await Promise.all([
     supabase.from("people").select("id",{count:"exact",head:true}).eq("church_id",churchId).neq("status","inactive"),
