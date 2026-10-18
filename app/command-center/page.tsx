@@ -30,6 +30,15 @@ export default async function CommandCenter() {
   ]):[{data:[],error:null},{data:[],error:null}];
   if(positionsResult.error||serveResult.error)throw new Error("Unable to verify service planning data. Please retry.");
   const positions=positionsResult.data,serve=serveResult.data;
+  if(serviceIds.length){
+    const [positionCountCheck,assignmentCountCheck]=await Promise.all([
+      supabase.from("service_positions").select("id",{count:"exact",head:true}).eq("church_id",churchId).in("service_id",serviceIds),
+      supabase.from("service_assignments").select("id",{count:"exact",head:true}).eq("church_id",churchId).in("service_id",serviceIds)
+    ]);
+    if(positionCountCheck.error||assignmentCountCheck.error||positionCountCheck.count===null||assignmentCountCheck.count===null||
+      positionCountCheck.count!==(positions?.length??0)||assignmentCountCheck.count!==(serve?.length??0))
+      throw new Error("Unable to verify complete service staffing data. Please retry.");
+  }
   // A successful PostgREST response may still be truncated by row limits.
   const [visitorCountCheck,taskCountCheck,journeyCountCheck,serviceCountCheck]=await Promise.all([
     supabase.from("people").select("id",{count:"exact",head:true}).eq("church_id",churchId).eq("status","visitor"),
