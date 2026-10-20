@@ -123,9 +123,15 @@ export async function detectMigrationDuplicates(formData:FormData){
  const jobId=String(formData.get("job_id")??"");
  const {data:job}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
  if(!job||job.status!=="review")redirect(`/migration/${jobId}?error=Job+is+not+ready+for+duplicate+review`);
- const {data:records}=await supabase.from("migration_records").select("id,normalized_data,status").eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["ready","needs_review"]);
- if(!records)redirect(`/migration/${jobId}?error=Could+not+load+staged+records`);
- const {data:people}=await supabase.from("people").select("id,email,phone").eq("church_id",m.church_id);
+ const {data:records,error:recordsError}=await supabase.from("migration_records").select("id,normalized_data,status").eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["ready","needs_review"]);
+ if(recordsError||!records)redirect(`/migration/${jobId}?error=Could+not+load+staged+records`);
+ const {data:people,error:peopleError}=await supabase.from("people").select("id,email,phone").eq("church_id",m.church_id);
+ if(peopleError||!people)redirect(`/migration/${jobId}?error=Could+not+verify+existing+people`);
+ const [stagedCount,peopleCount]=await Promise.all([
+  supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["ready","needs_review"]),
+  supabase.from("people").select("id",{count:"exact",head:true}).eq("church_id",m.church_id)
+ ]);
+ if(stagedCount.error||peopleCount.error||stagedCount.count===null||peopleCount.count===null||stagedCount.count!==records.length||peopleCount.count!==people.length)redirect(`/migration/${jobId}?error=Duplicate+scan+requires+complete+records`);
  const emailMap=new Map((people??[]).filter(p=>p.email).map(p=>[String(p.email).trim().toLowerCase(),p.id]));
  const phoneMap=new Map<string,string>((people??[]).filter(p=>p.phone).map(p=>[canonicalPhone(String(p.phone)),String(p.id)] as [string,string]).filter(([k])=>k.length>=7));
  let duplicates=0;
