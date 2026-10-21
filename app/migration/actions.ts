@@ -134,9 +134,21 @@ export async function detectMigrationDuplicates(formData:FormData){
  if(stagedCount.error||peopleCount.error||stagedCount.count===null||peopleCount.count===null||stagedCount.count!==records.length||peopleCount.count!==people.length)redirect(`/migration/${jobId}?error=Duplicate+scan+requires+complete+records`);
  const emailMap=new Map((people??[]).filter(p=>p.email).map(p=>[String(p.email).trim().toLowerCase(),p.id]));
  const phoneMap=new Map<string,string>((people??[]).filter(p=>p.phone).map(p=>[canonicalPhone(String(p.phone)),String(p.id)] as [string,string]).filter(([k])=>k.length>=7));
+ const stagedEmails=new Set<string>(),stagedPhones=new Set<string>();
  let duplicates=0;
- for(const r of records){const d=(r.normalized_data??{}) as Record<string,unknown>;const email=String(d.email??"").trim().toLowerCase();const phone=canonicalPhone(String(d.phone??""));const match=(email&&emailMap.get(email))||(phone.length>=7&&phoneMap.get(phone));
-  if(match){const {error}=await supabase.from("migration_records").update({status:"duplicate",matched_record_id:match,review_reason:email&&emailMap.has(email)?"Existing person has same email":"Existing person has same phone"}).eq("id",r.id).eq("church_id",m.church_id).eq("migration_job_id",jobId);if(error)redirect(`/migration/${jobId}?error=Duplicate+review+could+not+complete`);duplicates++;}
+ for(const r of records){
+  const d=(r.normalized_data??{}) as Record<string,unknown>;
+  const email=String(d.email??"").trim().toLowerCase(),phone=canonicalPhone(String(d.phone??""));
+  const existingMatch=(email&&emailMap.get(email))||(phone.length>=7&&phoneMap.get(phone));
+  const repeatedEmail=Boolean(email&&stagedEmails.has(email)),repeatedPhone=phone.length>=7&&stagedPhones.has(phone);
+  if(email)stagedEmails.add(email);
+  if(phone.length>=7)stagedPhones.add(phone);
+  if(existingMatch||repeatedEmail||repeatedPhone){
+   const reason=existingMatch?(email&&emailMap.has(email)?"Existing person has same email":"Existing person has same phone"):(repeatedEmail?"Repeated email within import":"Repeated phone within import");
+   const {error}=await supabase.from("migration_records").update({status:"duplicate",matched_record_id:existingMatch||null,review_reason:reason}).eq("id",r.id).eq("church_id",m.church_id).eq("migration_job_id",jobId);
+   if(error)redirect(`/migration/${jobId}?error=Duplicate+review+could+not+complete`);
+   duplicates++;
+  }
  }
  const {count:review}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["needs_review","duplicate"]);
  const {count:ready}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
