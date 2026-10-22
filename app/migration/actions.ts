@@ -97,6 +97,23 @@ export async function analyzeCsvMigration(formData:FormData){
  redirect(`/migration/${jobId}?message=CSV+analyzed+and+staged+for+mapping`);
 }
 
+export async function excludeUnrecognizedMigrationField(formData:FormData){
+ const supabase=await createClient();
+ const {data:{user}}=await supabase.auth.getUser();if(!user)redirect("/login");
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)throw new Error("Unable to verify migration access. Please retry.");
+ if(!m)redirect("/onboarding");
+ if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??""),mappingId=String(formData.get("mapping_id")??"");
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError||!job||job.status!=="mapping")redirect(`/migration/${jobId}?error=Mapping+review+is+not+available`);
+ const {data:field,error:fieldError}=await supabase.from("migration_mappings").select("id,target_field").eq("id",mappingId).eq("church_id",m.church_id).eq("migration_job_id",jobId).maybeSingle();
+ if(fieldError||!field||field.target_field)redirect(`/migration/${jobId}?error=Only+unrecognized+fields+can+be+excluded`);
+ const {data:deleted,error:deleteError}=await supabase.from("migration_mappings").delete().eq("id",mappingId).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("target_field","").select("id");
+ if(deleteError||deleted?.length!==1)redirect(`/migration/${jobId}?error=Could+not+exclude+field`);
+ redirect(`/migration/${jobId}?message=Unrecognized+field+excluded+from+mapping`);
+}
+
 export async function approveMigrationMappings(formData:FormData){
  const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
  const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
