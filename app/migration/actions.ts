@@ -170,9 +170,11 @@ export async function detectMigrationDuplicates(formData:FormData){
    duplicates++;
   }
  }
- const {count:review}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["needs_review","duplicate"]);
- const {count:ready}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
- await supabase.from("migration_jobs").update({ready_records:ready??0,review_records:review??0,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id);
+ const {count:review,error:reviewError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["needs_review","duplicate"]);
+ const {count:ready,error:readyError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
+ if(reviewError||readyError||review===null||ready===null)redirect(`/migration/${jobId}?error=Could+not+reconcile+record+counts`);
+ const {error:summaryError}=await supabase.from("migration_jobs").update({ready_records:ready,review_records:review,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id);
+ if(summaryError)redirect(`/migration/${jobId}?error=Could+not+update+migration+summary`);
  redirect(`/migration/${jobId}?message=Duplicate+scan+complete.+${duplicates}+possible+duplicates+flagged`);
 }
 
@@ -189,9 +191,11 @@ export async function resolveMigrationRecord(formData:FormData){
  if(!record||!["duplicate","needs_review"].includes(record.status))redirect(`/migration/${jobId}?error=Record+is+not+an+open+exception`);
  const {error}=await supabase.from("migration_records").update({status:resolution,matched_record_id:resolution==="ready"?null:undefined,review_reason:resolution==="excluded"?"Excluded during human review":null}).eq("id",recordId).eq("church_id",m.church_id).eq("migration_job_id",jobId);
  if(error)redirect(`/migration/${jobId}?error=Could+not+resolve+record`);
- const {count:review}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["needs_review","duplicate"]);
- const {count:ready}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
- await supabase.from("migration_jobs").update({ready_records:ready??0,review_records:review??0,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id);
+ const {count:review,error:reviewError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["needs_review","duplicate"]);
+ const {count:ready,error:readyError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
+ if(reviewError||readyError||review===null||ready===null)redirect(`/migration/${jobId}?error=Could+not+reconcile+record+counts`);
+ const {error:summaryError}=await supabase.from("migration_jobs").update({ready_records:ready,review_records:review,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id);
+ if(summaryError)redirect(`/migration/${jobId}?error=Could+not+update+migration+summary`);
  redirect(`/migration/${jobId}?message=Exception+resolved`);
 }
 
