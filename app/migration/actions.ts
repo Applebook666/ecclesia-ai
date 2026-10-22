@@ -203,8 +203,11 @@ export async function importReadyPeopleMigration(formData:FormData){
  if(confirmation!=="IMPORT")redirect(`/migration/${jobId}?error=Type+IMPORT+to+confirm+the+live+People+import`);
  const {data:job}=await supabase.from("migration_jobs").select("id,status,church_id").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
  if(!job||job.status!=="review")redirect(`/migration/${jobId}?error=Migration+is+not+ready+for+live+import`);
- const {count:open}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["pending","needs_review","duplicate"]);
- if((open??0)>0)redirect(`/migration/${jobId}?error=Resolve+every+exception+before+importing`);
+ const {count:open,error:openError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["pending","needs_review","duplicate"]);
+ if(openError||open===null)redirect(`/migration/${jobId}?error=Could+not+verify+unresolved+exceptions`);
+ if(open>0)redirect(`/migration/${jobId}?error=Resolve+every+exception+before+importing`);
+ const {count:ready,error:readyError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
+ if(readyError||ready===null||ready<1)redirect(`/migration/${jobId}?error=Could+not+verify+import+ready+records`);
  const {data,error}=await supabase.rpc("import_ready_people_migration",{target_job_id:jobId});
  if(error)redirect(`/migration/${jobId}?error=Live+import+was+rejected.+No+partial+import+was+kept`);
  const imported=typeof data==="object"&&data&&"imported" in data?String((data as {imported:unknown}).imported):"0";
