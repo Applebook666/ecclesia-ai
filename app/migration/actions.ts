@@ -165,8 +165,8 @@ export async function detectMigrationDuplicates(formData:FormData){
   if(phone.length>=7)stagedPhones.add(phone);
   if(existingMatch||repeatedEmail||repeatedPhone){
    const reason=existingMatch?(email&&emailMap.has(email)?"Existing person has same email":"Existing person has same phone"):(repeatedEmail?"Repeated email within import":"Repeated phone within import");
-   const {error}=await supabase.from("migration_records").update({status:"duplicate",matched_record_id:existingMatch||null,review_reason:reason}).eq("id",r.id).eq("church_id",m.church_id).eq("migration_job_id",jobId);
-   if(error)redirect(`/migration/${jobId}?error=Duplicate+review+could+not+complete`);
+   const {data:updated,error}=await supabase.from("migration_records").update({status:"duplicate",matched_record_id:existingMatch||null,review_reason:reason}).eq("id",r.id).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status",r.status).select("id");
+   if(error||updated?.length!==1)redirect(`/migration/${jobId}?error=Duplicate+review+could+not+complete`);
    duplicates++;
   }
  }
