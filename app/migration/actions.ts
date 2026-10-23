@@ -201,11 +201,13 @@ export async function resolveMigrationRecord(formData:FormData){
 
 export async function importReadyPeopleMigration(formData:FormData){
  const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
- const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)redirect("/migration?error=Could+not+verify+import+permissions");
  if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
  const jobId=String(formData.get("job_id")??""); const confirmation=String(formData.get("confirmation")??"");
  if(confirmation!=="IMPORT")redirect(`/migration/${jobId}?error=Type+IMPORT+to+confirm+the+live+People+import`);
- const {data:job}=await supabase.from("migration_jobs").select("id,status,church_id").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status,church_id").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError)redirect(`/migration/${jobId}?error=Could+not+verify+migration+status`);
  if(!job||job.status!=="review")redirect(`/migration/${jobId}?error=Migration+is+not+ready+for+live+import`);
  const {count:open,error:openError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["pending","needs_review","duplicate"]);
  if(openError||open===null)redirect(`/migration/${jobId}?error=Could+not+verify+unresolved+exceptions`);
