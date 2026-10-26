@@ -116,10 +116,12 @@ export async function excludeUnrecognizedMigrationField(formData:FormData){
 
 export async function approveMigrationMappings(formData:FormData){
  const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
- const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)redirect("/migration?error=Could+not+verify+mapping+permissions");
  if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
  const jobId=String(formData.get("job_id")??"");
- const {data:job}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError)redirect(`/migration/${jobId}?error=Could+not+verify+migration+status`);
  if(!job||job.status!=="mapping")redirect(`/migration/${jobId}?error=Job+is+not+ready+for+mapping+approval`);
  const {data:maps,error:mapsError}=await supabase.from("migration_mappings").select("id,target_field,confidence").eq("church_id",m.church_id).eq("migration_job_id",jobId);
  if(mapsError||!maps?.length)redirect(`/migration/${jobId}?error=Could+not+verify+field+mappings`);
@@ -130,8 +132,8 @@ export async function approveMigrationMappings(formData:FormData){
  const now=new Date().toISOString();
  const {error}=await supabase.from("migration_mappings").update({approved_by:user.id,approved_at:now}).eq("church_id",m.church_id).eq("migration_job_id",jobId);
  if(error)redirect(`/migration/${jobId}?error=Could+not+approve+field+mappings`);
- const {error:stateError}=await supabase.from("migration_jobs").update({status:"review",updated_at:now}).eq("id",jobId).eq("church_id",m.church_id).eq("status","mapping");
- if(stateError)redirect(`/migration/${jobId}?error=Mappings+approved+but+review+could+not+start`);
+ const {data:transitioned,error:stateError}=await supabase.from("migration_jobs").update({status:"review",updated_at:now}).eq("id",jobId).eq("church_id",m.church_id).eq("status","mapping").select("id");
+ if(stateError||transitioned?.length!==1)redirect(`/migration/${jobId}?error=Mappings+approved+but+review+could+not+start`);
  redirect(`/migration/${jobId}?message=Mappings+approved.+Exception+review+is+now+required`);
 }
 
