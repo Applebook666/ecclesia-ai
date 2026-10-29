@@ -76,12 +76,15 @@ function normHeader(v:string){return v.trim().toLowerCase().replace(/[^a-z0-9]+/
 
 export async function analyzeCsvMigration(formData:FormData){
  const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
- const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)redirect(`/migration?error=Could+not+verify+analysis+permissions`);
  if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
  const jobId=String(formData.get("job_id")??"");
- const {data:job}=await supabase.from("migration_jobs").select("id,status,source_type").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status,source_type").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError)redirect(`/migration/${jobId}?error=Could+not+verify+migration+status`);
  if(!job||job.status!=="analyzing"||job.source_type!=="csv")redirect(`/migration/${jobId}?error=CSV+analysis+is+not+available`);
- const {data:file}=await supabase.from("migration_files").select("id,storage_path").eq("church_id",m.church_id).eq("migration_job_id",jobId).order("created_at",{ascending:false}).limit(1).maybeSingle();
+ const {data:file,error:fileError}=await supabase.from("migration_files").select("id,storage_path").eq("church_id",m.church_id).eq("migration_job_id",jobId).order("created_at",{ascending:false}).limit(1).maybeSingle();
+ if(fileError)redirect(`/migration/${jobId}?error=Could+not+verify+source+file`);
  if(!file)redirect(`/migration/${jobId}?error=No+source+file+found`);
  const {data:blob,error:downloadError}=await supabase.storage.from("migration-imports").download(file.storage_path);
  if(downloadError||!blob)redirect(`/migration/${jobId}?error=Could+not+read+source+file`);
@@ -94,8 +97,8 @@ export async function analyzeCsvMigration(formData:FormData){
  const {error:recordError}=await supabase.from("migration_records").insert(records);
  if(recordError){await supabase.from("migration_mappings").delete().eq("church_id",m.church_id).eq("migration_job_id",jobId);redirect(`/migration/${jobId}?error=Could+not+stage+records`);}
  const ready=records.filter(r=>r.status==="ready").length, review=records.length-ready;
- const {error:updateError}=await supabase.from("migration_jobs").update({status:"mapping",total_records:records.length,ready_records:ready,review_records:review,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id).eq("status","analyzing");
- if(updateError)redirect(`/migration/${jobId}?error=Records+staged+but+job+state+could+not+advance`);
+ const {data:transitioned,error:updateError}=await supabase.from("migration_jobs").update({status:"mapping",total_records:records.length,ready_records:ready,review_records:review,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id).eq("status","analyzing").select("id");
+ if(updateError||transitioned?.length!==1)redirect(`/migration/${jobId}?error=Records+staged+but+job+state+could+not+advance`);
  redirect(`/migration/${jobId}?message=CSV+analyzed+and+staged+for+mapping`);
 }
 
