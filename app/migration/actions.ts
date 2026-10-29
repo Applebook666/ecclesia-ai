@@ -226,7 +226,8 @@ export async function importReadyPeopleMigration(formData:FormData){
  const {count:ready,error:readyError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
  if(readyError||ready===null||ready<1)redirect(`/migration/${jobId}?error=Could+not+verify+import+ready+records`);
  const {data,error}=await supabase.rpc("import_ready_people_migration",{target_job_id:jobId});
- if(error)redirect(`/migration/${jobId}?error=Live+import+was+rejected.+No+partial+import+was+kept`);
- const imported=typeof data==="object"&&data&&"imported" in data?String((data as {imported:unknown}).imported):"0";
- redirect(`/migration/${jobId}?message=Import+completed+and+reconciled.+${imported}+People+records+created`);
+ if(error)redirect(`/migration/${jobId}?error=Live+import+could+not+be+confirmed.+Check+job+status+and+reconciliation+before+retrying`);
+ const imported=typeof data==="object"&&data!==null&&"imported" in data?(data as {imported:unknown}).imported:null;
+ if(typeof imported!=="number"||!Number.isSafeInteger(imported)||imported<0)redirect(`/migration/${jobId}?error=Import+result+could+not+be+verified.+Check+reconciliation+before+retrying`);
+ redirect(`/migration/${jobId}?message=Import+function+reported+${imported}+People+records+created.+Verify+reconciliation`);
 }
