@@ -70,6 +70,7 @@ function csvRows(text:string){
   else if((ch==="\n"||ch==="\r")&&!quoted){if(ch==="\r"&&text[i+1]==="\n")i++;row.push(cell);cell="";if(row.some(v=>v.trim()))rows.push(row);row=[];}
   else cell+=ch;
  }
+ if(quoted)return null;
  row.push(cell); if(row.some(v=>v.trim()))rows.push(row); return rows;
 }
 function normHeader(v:string){return v.trim().toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");}
@@ -89,12 +90,13 @@ export async function analyzeCsvMigration(formData:FormData){
  const {data:blob,error:downloadError}=await supabase.storage.from("migration-imports").download(file.storage_path);
  if(downloadError||!blob)redirect(`/migration/${jobId}?error=Could+not+read+source+file`);
  const text=await blob.text(); const rows=csvRows(text);
+ if(!rows)redirect(`/migration/${jobId}?error=CSV+contains+an+unclosed+quoted+field`);
  if(rows.length<2||rows.length>5001)redirect(`/migration/${jobId}?error=CSV+must+contain+1+to+5000+data+rows`);
  const headers=rows[0].map(normHeader); if(headers.some((h,i)=>!h||headers.indexOf(h)!==i))redirect(`/migration/${jobId}?error=CSV+headers+must+be+unique+and+non-empty`);
  if(rows.some(row=>row.length!==headers.length))redirect(`/migration/${jobId}?error=CSV+rows+must+have+the+same+number+of+columns+as+the+header`);
  if(!headers.some(h=>peopleTargets[h]==="first_name"||peopleTargets[h]==="last_name"))redirect(`/migration/${jobId}?error=CSV+must+include+a+recognized+first+or+last+name+column`);
  const mappings=headers.map(h=>({church_id:m.church_id,migration_job_id:jobId,source_entity:"people",source_field:h,target_entity:"people",target_field:peopleTargets[h]??"",confidence:peopleTargets[h]?0.95:0.25}));
- const records=rows.slice(1).map((r,i)=>{const raw=Object.fromEntries(headers.map((h,x)=>[h,(r[x]??"").trim()]));const normalized=Object.fromEntries(headers.filter(h=>peopleTargets[h]).map(h=>[peopleTargets[h],raw[h]]));return {church_id:m.church_id,migration_job_id:jobId,source_entity:"people",source_record_key:String(i+2),raw_data:raw,normalized_data:normalized,status:Object.keys(normalized).length?"ready":"needs_review",review_reason:Object.keys(normalized).length?null:"No recognized People fields"};});
+ const records=rows.slice(1).map((r,i)=>{const raw=Object.fromEntries(headers.map((h,x)=>[h,(r[x]??"").trim()]));const normalized=Object.fromEntries(headers.filter(h=>peopleTargets[h]).map(h=>[peopleTargets[h],raw[h]]));return {church_id:m.church_id,migration_job_id:jobId,source_entity:"people",source_record_key:String(i+2),raw_data:raw,normalized_data:normalized,status:String(normalized.first_name??normalized.last_name??"").trim()?"ready":"needs_review",review_reason:String(normalized.first_name??normalized.last_name??"").trim()?null:"A first or last name is required for each person"};});
  const {error:mapError}=await supabase.from("migration_mappings").insert(mappings); if(mapError)redirect(`/migration/${jobId}?error=Could+not+stage+field+mappings`);
  const {error:recordError}=await supabase.from("migration_records").insert(records);
  if(recordError){await supabase.from("migration_mappings").delete().eq("church_id",m.church_id).eq("migration_job_id",jobId);redirect(`/migration/${jobId}?error=Could+not+stage+records`);}
