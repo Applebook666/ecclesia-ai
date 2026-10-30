@@ -1,0 +1,243 @@
+"use server";
+import {redirect} from "next/navigation";
+import {createClient} from "@/lib/supabase/server";
+
+const allowedSources=new Set(["csv","xlsx","api","manual","concierge"]);
+
+export async function createMigrationJob(formData:FormData){
+ const supabase=await createClient();
+ const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(!m)redirect("/onboarding");
+ if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const sourceName=String(formData.get("source_name")??"").trim();
+ const sourceType=String(formData.get("source_type")??"").trim();
+ if(sourceName.length<2||sourceName.length>120||!allowedSources.has(sourceType))redirect("/migration?error=Invalid+migration+source");
+ const {error}=await supabase.from("migration_jobs").insert({church_id:m.church_id,source_name:sourceName,source_type:sourceType,status:"draft",created_by:user.id});
+ if(error)redirect("/migration?error=Could+not+create+migration+job");
+ redirect("/migration?message=Migration+job+created");
+}
+
+const allowedUploadTypes=new Map([
+ ["text/csv","csv"],["application/csv","csv"],["application/vnd.ms-excel","csv"],
+ ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","xlsx"],
+]);
+
+export async function uploadMigrationFile(formData:FormData){
+ const supabase=await createClient();
+ const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)redirect("/migration?error=Could+not+verify+upload+permissions");
+ if(!m)redirect("/onboarding");
+ if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??"");
+ const file=formData.get("file");
+ if(!(file instanceof File)||file.size===0||file.size>10485760)redirect("/migration?error=Choose+a+file+under+10MB");
+ const kind=allowedUploadTypes.get(file.type);
+ if(!kind)redirect("/migration?error=Only+CSV+or+XLSX+files+are+allowed");
+ const lowerName=file.name.toLowerCase();
+ const extensionKind=lowerName.endsWith(".csv")?"csv":lowerName.endsWith(".xlsx")?"xlsx":null;
+ if(!extensionKind||extensionKind!==kind)redirect("/migration?error=File+extension+and+content+type+must+match");
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status,source_type").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError)redirect("/migration?error=Could+not+verify+migration+job");
+ if(!job||job.status!=="draft"||!["csv","xlsx"].includes(job.source_type))redirect("/migration?error=This+migration+job+cannot+accept+files");
+ if(job.source_type!==kind)redirect("/migration?error=File+type+does+not+match+migration+source");
+ const safeName=file.name.replace(/[^a-zA-Z0-9._-]/g,"_").slice(-120)||"import";
+ const path=`${m.church_id}/${job.id}/${crypto.randomUUID()}-${safeName}`;
+ const bytes=await file.arrayBuffer();
+ const head=new Uint8Array(bytes.slice(0,8));
+ if(kind==="xlsx"&&!(head[0]===0x50&&head[1]===0x4b))redirect("/migration?error=Invalid+Excel+file");
+ if(kind==="csv"){
+  const sample=new Uint8Array(bytes.slice(0,Math.min(bytes.byteLength,4096)));
+  if(sample.some(b=>b===0))redirect("/migration?error=Invalid+CSV+file");
+ }
+ const {error:uploadError}=await supabase.storage.from("migration-imports").upload(path,bytes,{contentType:file.type,upsert:false});
+ if(uploadError)redirect("/migration?error=Secure+file+upload+failed");
+ const {error:metaError}=await supabase.from("migration_files").insert({church_id:m.church_id,migration_job_id:job.id,original_name:file.name.slice(0,255),storage_path:path,mime_type:file.type,byte_size:file.size});
+ if(metaError){await supabase.storage.from("migration-imports").remove([path]);redirect("/migration?error=Could+not+register+migration+file");}
+ const {data:transitioned,error:stateError}=await supabase.from("migration_jobs").update({status:"analyzing",started_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq("id",job.id).eq("church_id",m.church_id).eq("status","draft").select("id");
+ if(stateError||transitioned?.length!==1)redirect("/migration?error=File+stored+but+analysis+could+not+start");
+ redirect("/migration?message=File+secured+and+ready+for+analysis");
+}
+
+const peopleTargets:Record<string,string>={firstname:"first_name",first_name:"first_name",first:"first_name",lastname:"last_name",last_name:"last_name",last:"last_name",email:"email",emailaddress:"email",email_address:"email",phone:"phone",phonenumber:"phone",phone_number:"phone",mobile:"phone"};
+
+function csvRows(text:string){
+ const rows:string[][]=[]; let row:string[]=[],cell="",quoted=false;
+ for(let i=0;i<text.length;i++){const ch=text[i];
+  if(ch==='"'){if(quoted&&text[i+1]==='"'){cell+='"';i++;}else quoted=!quoted;}
+  else if(ch===","&&!quoted){row.push(cell);cell="";}
+  else if((ch==="\n"||ch==="\r")&&!quoted){if(ch==="\r"&&text[i+1]==="\n")i++;row.push(cell);cell="";if(row.some(v=>v.trim()))rows.push(row);row=[];}
+  else cell+=ch;
+ }
+ if(quoted)return null;
+ row.push(cell); if(row.some(v=>v.trim()))rows.push(row); return rows;
+}
+function normHeader(v:string){return v.trim().toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");}
+
+export async function analyzeCsvMigration(formData:FormData){
+ const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)redirect(`/migration?error=Could+not+verify+analysis+permissions`);
+ if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??"");
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status,source_type").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError)redirect(`/migration/${jobId}?error=Could+not+verify+migration+status`);
+ if(!job||job.status!=="analyzing"||job.source_type!=="csv")redirect(`/migration/${jobId}?error=CSV+analysis+is+not+available`);
+ const {data:file,error:fileError}=await supabase.from("migration_files").select("id,storage_path").eq("church_id",m.church_id).eq("migration_job_id",jobId).order("created_at",{ascending:false}).limit(1).maybeSingle();
+ if(fileError)redirect(`/migration/${jobId}?error=Could+not+verify+source+file`);
+ if(!file)redirect(`/migration/${jobId}?error=No+source+file+found`);
+ const {data:blob,error:downloadError}=await supabase.storage.from("migration-imports").download(file.storage_path);
+ if(downloadError||!blob)redirect(`/migration/${jobId}?error=Could+not+read+source+file`);
+ const text=await blob.text(); const rows=csvRows(text);
+ if(!rows)redirect(`/migration/${jobId}?error=CSV+contains+an+unclosed+quoted+field`);
+ if(rows.length<2||rows.length>5001)redirect(`/migration/${jobId}?error=CSV+must+contain+1+to+5000+data+rows`);
+ const headers=rows[0].map(normHeader); if(headers.some((h,i)=>!h||headers.indexOf(h)!==i))redirect(`/migration/${jobId}?error=CSV+headers+must+be+unique+and+non-empty`);
+ if(rows.some(row=>row.length!==headers.length))redirect(`/migration/${jobId}?error=CSV+rows+must+have+the+same+number+of+columns+as+the+header`);
+ if(!headers.some(h=>peopleTargets[h]==="first_name"||peopleTargets[h]==="last_name"))redirect(`/migration/${jobId}?error=CSV+must+include+a+recognized+first+or+last+name+column`);
+ const mappedTargets=headers.map(h=>peopleTargets[h]).filter((target):target is string=>Boolean(target));
+ if(new Set(mappedTargets).size!==mappedTargets.length)redirect(`/migration/${jobId}?error=CSV+has+multiple+columns+mapping+to+the+same+People+field`);
+ const mappings=headers.map(h=>({church_id:m.church_id,migration_job_id:jobId,source_entity:"people",source_field:h,target_entity:"people",target_field:peopleTargets[h]??"",confidence:peopleTargets[h]?0.95:0.25}));
+ const records=rows.slice(1).map((r,i)=>{const raw=Object.fromEntries(headers.map((h,x)=>[h,(r[x]??"").trim()]));const normalized=Object.fromEntries(headers.filter(h=>peopleTargets[h]).map(h=>[peopleTargets[h],raw[h]]));return {church_id:m.church_id,migration_job_id:jobId,source_entity:"people",source_record_key:String(i+2),raw_data:raw,normalized_data:normalized,status:(String(normalized.first_name??"").trim()||String(normalized.last_name??"").trim())?"ready":"needs_review",review_reason:(String(normalized.first_name??"").trim()||String(normalized.last_name??"").trim())?null:"A first or last name is required for each person"};});
+ const {count:existingMappings,error:existingMappingsError}=await supabase.from("migration_mappings").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId);
+ const {count:existingRecords,error:existingRecordsError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId);
+ if(existingMappingsError||existingRecordsError||existingMappings===null||existingRecords===null)redirect(`/migration/${jobId}?error=Could+not+verify+existing+staged+data`);
+ if(existingMappings!==0||existingRecords!==0)redirect(`/migration/${jobId}?error=Staged+data+already+exists.+Do+not+reanalyze+this+job`);
+ const {error:mapError}=await supabase.from("migration_mappings").insert(mappings); if(mapError)redirect(`/migration/${jobId}?error=Could+not+stage+field+mappings`);
+ const {error:recordError}=await supabase.from("migration_records").insert(records);
+ if(recordError){await supabase.from("migration_mappings").delete().eq("church_id",m.church_id).eq("migration_job_id",jobId);redirect(`/migration/${jobId}?error=Could+not+stage+records`);}
+ const ready=records.filter(r=>r.status==="ready").length, review=records.length-ready;
+ const {data:transitioned,error:updateError}=await supabase.from("migration_jobs").update({status:"mapping",total_records:records.length,ready_records:ready,review_records:review,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id).eq("status","analyzing").select("id");
+ if(updateError||transitioned?.length!==1)redirect(`/migration/${jobId}?error=Records+staged+but+job+state+could+not+advance`);
+ redirect(`/migration/${jobId}?message=CSV+analyzed+and+staged+for+mapping`);
+}
+
+export async function excludeUnrecognizedMigrationField(formData:FormData){
+ const supabase=await createClient();
+ const {data:{user}}=await supabase.auth.getUser();if(!user)redirect("/login");
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)throw new Error("Unable to verify migration access. Please retry.");
+ if(!m)redirect("/onboarding");
+ if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??""),mappingId=String(formData.get("mapping_id")??"");
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError||!job||job.status!=="mapping")redirect(`/migration/${jobId}?error=Mapping+review+is+not+available`);
+ const {data:field,error:fieldError}=await supabase.from("migration_mappings").select("id,target_field").eq("id",mappingId).eq("church_id",m.church_id).eq("migration_job_id",jobId).maybeSingle();
+ if(fieldError||!field||field.target_field)redirect(`/migration/${jobId}?error=Only+unrecognized+fields+can+be+excluded`);
+ const {data:deleted,error:deleteError}=await supabase.from("migration_mappings").delete().eq("id",mappingId).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("target_field","").select("id");
+ if(deleteError||deleted?.length!==1)redirect(`/migration/${jobId}?error=Could+not+exclude+field`);
+ redirect(`/migration/${jobId}?message=Unrecognized+field+excluded+from+mapping`);
+}
+
+export async function approveMigrationMappings(formData:FormData){
+ const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)redirect("/migration?error=Could+not+verify+mapping+permissions");
+ if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??"");
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError)redirect(`/migration/${jobId}?error=Could+not+verify+migration+status`);
+ if(!job||job.status!=="mapping")redirect(`/migration/${jobId}?error=Job+is+not+ready+for+mapping+approval`);
+ const {data:maps,error:mapsError}=await supabase.from("migration_mappings").select("id,target_field,confidence").eq("church_id",m.church_id).eq("migration_job_id",jobId);
+ if(mapsError||!maps?.length)redirect(`/migration/${jobId}?error=Could+not+verify+field+mappings`);
+ const {count:mapCount,error:mapCountError}=await supabase.from("migration_mappings").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId);
+ if(mapCountError||mapCount===null||mapCount!==maps.length)redirect(`/migration/${jobId}?error=Mapping+review+requires+complete+records`);
+ if(!maps.some(x=>x.target_field==="first_name"||x.target_field==="last_name"))redirect(`/migration/${jobId}?error=At+least+one+name+field+is+required`);
+ if(maps.some(x=>!x.target_field||Number(x.confidence??0)<0.5))redirect(`/migration/${jobId}?error=Uncertain+fields+must+be+reviewed+before+approval`);
+ const now=new Date().toISOString();
+ const {error}=await supabase.from("migration_mappings").update({approved_by:user.id,approved_at:now}).eq("church_id",m.church_id).eq("migration_job_id",jobId);
+ if(error)redirect(`/migration/${jobId}?error=Could+not+approve+field+mappings`);
+ const {data:transitioned,error:stateError}=await supabase.from("migration_jobs").update({status:"review",updated_at:now}).eq("id",jobId).eq("church_id",m.church_id).eq("status","mapping").select("id");
+ if(stateError||transitioned?.length!==1)redirect(`/migration/${jobId}?error=Mappings+approved+but+review+could+not+start`);
+ redirect(`/migration/${jobId}?message=Mappings+approved.+Exception+review+is+now+required`);
+}
+
+function canonicalPhone(v:string){return v.replace(/\D/g,"").slice(-10);}
+export async function detectMigrationDuplicates(formData:FormData){
+ const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)redirect("/migration?error=Could+not+verify+duplicate+scan+permissions");
+ if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??"");
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError)redirect(`/migration/${jobId}?error=Could+not+verify+migration+status`);
+ if(!job||job.status!=="review")redirect(`/migration/${jobId}?error=Job+is+not+ready+for+duplicate+review`);
+ const {data:records,error:recordsError}=await supabase.from("migration_records").select("id,normalized_data,status").eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["ready","needs_review"]);
+ if(recordsError||!records)redirect(`/migration/${jobId}?error=Could+not+load+staged+records`);
+ const {data:people,error:peopleError}=await supabase.from("people").select("id,email,phone").eq("church_id",m.church_id);
+ if(peopleError||!people)redirect(`/migration/${jobId}?error=Could+not+verify+existing+people`);
+ const [stagedCount,peopleCount]=await Promise.all([
+  supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["ready","needs_review"]),
+  supabase.from("people").select("id",{count:"exact",head:true}).eq("church_id",m.church_id)
+ ]);
+ if(stagedCount.error||peopleCount.error||stagedCount.count===null||peopleCount.count===null||stagedCount.count!==records.length||peopleCount.count!==people.length)redirect(`/migration/${jobId}?error=Duplicate+scan+requires+complete+records`);
+ const emailMap=new Map((people??[]).filter(p=>p.email).map(p=>[String(p.email).trim().toLowerCase(),p.id]));
+ const phoneMap=new Map<string,string>((people??[]).filter(p=>p.phone).map(p=>[canonicalPhone(String(p.phone)),String(p.id)] as [string,string]).filter(([k])=>k.length>=7));
+ const stagedEmails=new Set<string>(),stagedPhones=new Set<string>();
+ let duplicates=0;
+ for(const r of records){
+  const d=(r.normalized_data??{}) as Record<string,unknown>;
+  const email=String(d.email??"").trim().toLowerCase(),phone=canonicalPhone(String(d.phone??""));
+  const existingMatch=(email&&emailMap.get(email))||(phone.length>=7&&phoneMap.get(phone));
+  const repeatedEmail=Boolean(email&&stagedEmails.has(email)),repeatedPhone=phone.length>=7&&stagedPhones.has(phone);
+  if(email)stagedEmails.add(email);
+  if(phone.length>=7)stagedPhones.add(phone);
+  if(existingMatch||repeatedEmail||repeatedPhone){
+   const reason=existingMatch?(email&&emailMap.has(email)?"Existing person has same email":"Existing person has same phone"):(repeatedEmail?"Repeated email within import":"Repeated phone within import");
+   const {data:updated,error}=await supabase.from("migration_records").update({status:"duplicate",matched_record_id:existingMatch||null,review_reason:reason}).eq("id",r.id).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status",r.status).select("id");
+   if(error||updated?.length!==1)redirect(`/migration/${jobId}?error=Duplicate+review+could+not+complete`);
+   duplicates++;
+  }
+ }
+ const {count:review,error:reviewError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["needs_review","duplicate"]);
+ const {count:ready,error:readyError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
+ if(reviewError||readyError||review===null||ready===null)redirect(`/migration/${jobId}?error=Could+not+reconcile+record+counts`);
+ const {error:summaryError}=await supabase.from("migration_jobs").update({ready_records:ready,review_records:review,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id);
+ if(summaryError)redirect(`/migration/${jobId}?error=Could+not+update+migration+summary`);
+ redirect(`/migration/${jobId}?message=Duplicate+scan+complete.+${duplicates}+possible+duplicates+flagged`);
+}
+
+const allowedResolutions=new Set(["ready","excluded"]);
+export async function resolveMigrationRecord(formData:FormData){
+ const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??""),recordId=String(formData.get("record_id")??""),resolution=String(formData.get("resolution")??"");
+ if(!allowedResolutions.has(resolution))redirect(`/migration/${jobId}?error=Invalid+record+resolution`);
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError)redirect(`/migration/${jobId}?error=Could+not+verify+migration+status`);
+ if(!job||job.status!=="review")redirect(`/migration/${jobId}?error=Job+is+not+in+exception+review`);
+ const {data:record,error:recordError}=await supabase.from("migration_records").select("id,status").eq("id",recordId).eq("church_id",m.church_id).eq("migration_job_id",jobId).maybeSingle();
+ if(recordError)redirect(`/migration/${jobId}?error=Could+not+verify+exception+record`);
+ if(!record||!["duplicate","needs_review"].includes(record.status))redirect(`/migration/${jobId}?error=Record+is+not+an+open+exception`);
+ const {data:updated,error}=await supabase.from("migration_records").update({status:resolution,matched_record_id:resolution==="ready"?null:undefined,review_reason:resolution==="excluded"?"Excluded during human review":null}).eq("id",recordId).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status",record.status).select("id");
+ if(error||updated?.length!==1)redirect(`/migration/${jobId}?error=Record+changed+or+could+not+be+resolved`);
+ const {count:review,error:reviewError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["needs_review","duplicate"]);
+ const {count:ready,error:readyError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
+ if(reviewError||readyError||review===null||ready===null)redirect(`/migration/${jobId}?error=Could+not+reconcile+record+counts`);
+ const {error:summaryError}=await supabase.from("migration_jobs").update({ready_records:ready,review_records:review,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id);
+ if(summaryError)redirect(`/migration/${jobId}?error=Could+not+update+migration+summary`);
+ redirect(`/migration/${jobId}?message=Exception+resolved`);
+}
+
+export async function importReadyPeopleMigration(formData:FormData){
+ const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)redirect("/migration?error=Could+not+verify+import+permissions");
+ if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
+ const jobId=String(formData.get("job_id")??""); const confirmation=String(formData.get("confirmation")??"");
+ if(confirmation!=="IMPORT")redirect(`/migration/${jobId}?error=Type+IMPORT+to+confirm+the+live+People+import`);
+ const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status,church_id").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
+ if(jobError)redirect(`/migration/${jobId}?error=Could+not+verify+migration+status`);
+ if(!job||job.status!=="review")redirect(`/migration/${jobId}?error=Migration+is+not+ready+for+live+import`);
+ const {count:open,error:openError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["pending","needs_review","duplicate"]);
+ if(openError||open===null)redirect(`/migration/${jobId}?error=Could+not+verify+unresolved+exceptions`);
+ if(open>0)redirect(`/migration/${jobId}?error=Resolve+every+exception+before+importing`);
+ const {count:ready,error:readyError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
+ if(readyError||ready===null||ready<1)redirect(`/migration/${jobId}?error=Could+not+verify+import+ready+records`);
+ const {data,error}=await supabase.rpc("import_ready_people_migration",{target_job_id:jobId});
+ if(error)redirect(`/migration/${jobId}?error=Live+import+could+not+be+confirmed.+Check+job+status+and+reconciliation+before+retrying`);
+ const imported=typeof data==="object"&&data!==null&&"imported" in data?(data as {imported:unknown}).imported:null;
+ if(typeof imported!=="number"||!Number.isSafeInteger(imported)||imported<0)redirect(`/migration/${jobId}?error=Import+result+could+not+be+verified.+Check+reconciliation+before+retrying`);
+ redirect(`/migration/${jobId}?message=Import+function+reported+${imported}+People+records+created.+Verify+reconciliation`);
+}
