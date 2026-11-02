@@ -18,6 +18,7 @@ begin
  if v_open>0 then raise exception 'Unresolved migration exceptions remain'; end if;
  select count(*) into v_ready from public.migration_records where church_id=v_church and migration_job_id=target_job_id and status='ready';
  if v_ready=0 then raise exception 'No records are ready to import'; end if;
+ if exists (select 1 from public.migration_records where church_id=v_church and migration_job_id=target_job_id and status='ready' and (nullif(btrim(coalesce(normalized_data->>'first_name','')),'') is null or nullif(btrim(coalesce(normalized_data->>'last_name','')),'') is null)) then raise exception 'Ready records must include first and last names'; end if;
  update public.migration_jobs set status='importing',updated_at=now() where id=target_job_id and church_id=v_church and status='review';
  for r in select id,normalized_data from public.migration_records where church_id=v_church and migration_job_id=target_job_id and status='ready' order by created_at,id for update loop
   if nullif(trim(coalesce(r.normalized_data->>'first_name','')),'') is null or nullif(trim(coalesce(r.normalized_data->>'last_name','')),'') is null then raise exception 'Ready record % is missing required name fields',r.id; end if;
