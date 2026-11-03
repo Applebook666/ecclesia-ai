@@ -200,7 +200,8 @@ export async function detectMigrationDuplicates(formData:FormData){
 const allowedResolutions=new Set(["ready","excluded"]);
 export async function resolveMigrationRecord(formData:FormData){
  const supabase=await createClient(); const {data:{user}}=await supabase.auth.getUser(); if(!user)redirect("/login");
- const {data:m}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ const {data:m,error:membershipError}=await supabase.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();
+ if(membershipError)redirect(`/migration?error=Could+not+verify+review+permissions`);
  if(!m)redirect("/onboarding"); if(!["owner","pastor","administrator"].includes(m.role))redirect("/command-center");
  const jobId=String(formData.get("job_id")??""),recordId=String(formData.get("record_id")??""),resolution=String(formData.get("resolution")??"");
  if(!allowedResolutions.has(resolution))redirect(`/migration/${jobId}?error=Invalid+record+resolution`);
@@ -216,8 +217,8 @@ export async function resolveMigrationRecord(formData:FormData){
  const {count:review,error:reviewError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["needs_review","duplicate"]);
  const {count:ready,error:readyError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status","ready");
  if(reviewError||readyError||review===null||ready===null)redirect(`/migration/${jobId}?error=Could+not+reconcile+record+counts`);
- const {error:summaryError}=await supabase.from("migration_jobs").update({ready_records:ready,review_records:review,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id);
- if(summaryError)redirect(`/migration/${jobId}?error=Could+not+update+migration+summary`);
+ const {data:summaryUpdated,error:summaryError}=await supabase.from("migration_jobs").update({ready_records:ready,review_records:review,updated_at:new Date().toISOString()}).eq("id",jobId).eq("church_id",m.church_id).eq("status","review").select("id");
+ if(summaryError||summaryUpdated?.length!==1)redirect(`/migration/${jobId}?error=Migration+state+changed+or+summary+could+not+be+updated`);
  redirect(`/migration/${jobId}?message=Exception+resolved`);
 }
 
