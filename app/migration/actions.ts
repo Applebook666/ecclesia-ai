@@ -207,9 +207,10 @@ export async function resolveMigrationRecord(formData:FormData){
  const {data:job,error:jobError}=await supabase.from("migration_jobs").select("id,status").eq("id",jobId).eq("church_id",m.church_id).maybeSingle();
  if(jobError)redirect(`/migration/${jobId}?error=Could+not+verify+migration+status`);
  if(!job||job.status!=="review")redirect(`/migration/${jobId}?error=Job+is+not+in+exception+review`);
- const {data:record,error:recordError}=await supabase.from("migration_records").select("id,status").eq("id",recordId).eq("church_id",m.church_id).eq("migration_job_id",jobId).maybeSingle();
+ const {data:record,error:recordError}=await supabase.from("migration_records").select("id,status,normalized_data").eq("id",recordId).eq("church_id",m.church_id).eq("migration_job_id",jobId).maybeSingle();
  if(recordError)redirect(`/migration/${jobId}?error=Could+not+verify+exception+record`);
  if(!record||!["duplicate","needs_review"].includes(record.status))redirect(`/migration/${jobId}?error=Record+is+not+an+open+exception`);
+ if(resolution==="ready"&&(!String(record.normalized_data?.first_name??"").trim()||!String(record.normalized_data?.last_name??"").trim()))redirect(`/migration/${jobId}?error=Both+first+and+last+names+are+required+before+marking+ready`);
  const {data:updated,error}=await supabase.from("migration_records").update({status:resolution,matched_record_id:resolution==="ready"?null:undefined,review_reason:resolution==="excluded"?"Excluded during human review":null}).eq("id",recordId).eq("church_id",m.church_id).eq("migration_job_id",jobId).eq("status",record.status).select("id");
  if(error||updated?.length!==1)redirect(`/migration/${jobId}?error=Record+changed+or+could+not+be+resolved`);
  const {count:review,error:reviewError}=await supabase.from("migration_records").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId).in("status",["needs_review","duplicate"]);
