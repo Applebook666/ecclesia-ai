@@ -142,7 +142,7 @@ export async function approveMigrationMappings(formData:FormData){
  if(mapsError||!maps?.length)redirect(`/migration/${jobId}?error=Could+not+verify+field+mappings`);
  const {count:mapCount,error:mapCountError}=await supabase.from("migration_mappings").select("id",{count:"exact",head:true}).eq("church_id",m.church_id).eq("migration_job_id",jobId);
  if(mapCountError||mapCount===null||mapCount!==maps.length)redirect(`/migration/${jobId}?error=Mapping+review+requires+complete+records`);
- if(!maps.some(x=>x.target_field==="first_name"||x.target_field==="last_name"))redirect(`/migration/${jobId}?error=At+least+one+name+field+is+required`);
+ if(!maps.some(x=>x.target_field==="first_name")||!maps.some(x=>x.target_field==="last_name"))redirect(`/migration/${jobId}?error=Both+first+and+last+name+fields+are+required`);
  if(maps.some(x=>!x.target_field||Number(x.confidence??0)<0.5))redirect(`/migration/${jobId}?error=Uncertain+fields+must+be+reviewed+before+approval`);
  const now=new Date().toISOString();
  const {error}=await supabase.from("migration_mappings").update({approved_by:user.id,approved_at:now}).eq("church_id",m.church_id).eq("migration_job_id",jobId);
