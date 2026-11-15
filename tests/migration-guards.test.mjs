@@ -42,3 +42,7 @@ test('Tenant isolation SQL covers cross-church references and RLS', () => {
 test('Application import delegates to the database RPC rather than inserting people directly', () => {
   assert.match(actions, /\.rpc\("import_ready_people_migration"/);
 });
+
+test('Mapping approval requires both first and last names', () => {
+  assert.match(actions, /maps\.some\(x=>x\.target_field==="first_name"\)\|\|!maps\.some\(x=>x\.target_field==="last_name"\)/);
+});
