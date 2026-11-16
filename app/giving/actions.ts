@@ -2,7 +2,7 @@
 import {redirect} from "next/navigation";
 import {createClient} from "@/lib/supabase/server";
 const allowed=["owner","administrator","finance"];
-async function financialContext(){const s=await createClient();const {data:{user}}=await s.auth.getUser();if(!user)redirect("/login");const {data:m}=await s.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();if(!m||!allowed.includes(m.role))redirect("/command-center");return {s,user,m};}
+async function financialContext(){const s=await createClient();const {data:{user}}=await s.auth.getUser();if(!user)redirect("/login");const {data:m,error:membershipError}=await s.from("church_memberships").select("church_id,role").eq("user_id",user.id).eq("status","active").limit(1).maybeSingle();if(membershipError||!m||!allowed.includes(m.role))redirect("/command-center");return {s,user,m};}
 export async function addContribution(formData:FormData){
  const {s,user,m}=await financialContext();
  const rawAmount=String(formData.get("amount")??"").trim();
