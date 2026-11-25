@@ -12,7 +12,7 @@ export async function addContribution(formData:FormData){
  const method=String(formData.get("payment_method")??"").trim();
  const reference=String(formData.get("reference")??"").trim();
  // Require decimal currency, never silently round amounts with fractional cents.
- if(!/^(?:0|[1-9]\\d{0,9})(?:\\.\\d{1,2})?$/.test(rawAmount)||Number(rawAmount)<=0)
+ if(!/^(?:0|[1-9]\d{0,9})(?:\.\d{1,2})?$/.test(rawAmount)||Number(rawAmount)<=0)
   redirect("/giving?error=Enter+a+valid+amount+with+up+to+two+decimal+places");
  const amount=Number(rawAmount);
  if(!fund)redirect("/giving?error=Select+a+giving+fund");
