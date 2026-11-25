@@ -18,7 +18,9 @@ export async function addContribution(formData:FormData){
  if(!fund)redirect("/giving?error=Select+a+giving+fund");
  if(!["cash","check","card","ach","other"].includes(method))
   redirect("/giving?error=Select+a+valid+payment+method");
- if(!/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$/.test(date)||Number.isNaN(Date.parse(date)))
+ // Reject impossible calendar dates rather than allowing normalization.
+ const calendarDate=new Date(date+":00Z");
+ if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(date)||!Number.isFinite(calendarDate.getTime())||calendarDate.toISOString().slice(0,16)!==date||date.startsWith("0000-"))
   redirect("/giving?error=Enter+a+valid+contribution+date");
  const {data:validFund,error:fundError}=await s.from("giving_funds").select("id").eq("church_id",m.church_id).eq("id",fund).eq("is_active",true).maybeSingle();
  if(fundError||!validFund)redirect("/giving?error=Selected+fund+is+not+available");
